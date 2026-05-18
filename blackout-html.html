@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <meta name="theme-color" content="#0a0a0a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Blackout — Calculador de Orçamento</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { background: #0a0a0a; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+    input::placeholder, textarea::placeholder { color: #2a2a2a; }
+    button { font-family: 'DM Sans', sans-serif; cursor: pointer; }
+    input, textarea, select { font-family: 'DM Sans', sans-serif; }
+
+    /* Loading screen */
+    #loading {
+      position: fixed; inset: 0; z-index: 9999;
+      background: #0a0a0a; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 14px;
+      color: #555; font-family: 'DM Mono', monospace;
+      font-size: 11px; letter-spacing: .2em; text-transform: uppercase;
+    }
+    .ld { width: 8px; height: 8px; border-radius: 50%; background: #f97316; animation: p 1.2s ease-in-out infinite; }
+    @keyframes p { 0%,100%{opacity:.3;transform:scale(.8)} 50%{opacity:1;transform:scale(1.2)} }
+
+    /* PS classes — usadas no modo de impressão (HTML gerado por buildSections) */
+    .ps { margin-bottom: 20px; }
+    .ps-h { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .ps-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .ps-t { font-size: 11px; font-weight: 800; letter-spacing: .2em; text-transform: uppercase; color: #111; font-family: 'Helvetica Neue', Arial, sans-serif; }
+    .ps-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #f0f0f0; gap: 14px; }
+    .ps-rl { font-size: 11px; color: #888; flex: 1; font-family: 'Helvetica Neue', Arial, sans-serif; }
+    .ps-rv { font-size: 11px; text-align: right; flex-shrink: 0; color: #333; font-weight: 500; font-family: 'Helvetica Neue', Arial, sans-serif; }
+    .ps-sub { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; margin: 8px 0 0; border-radius: 6px; }
+    .ps-sl { font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; font-family: 'Helvetica Neue', Arial, sans-serif; }
+    .ps-sv { font-size: 14px; font-weight: 800; font-family: 'Helvetica Neue', Arial, sans-serif; }
+
+    /* Print */
+    @media print {
+      #print-bar { display: none !important; }
+      body { background: white !important; }
+    }
+  </style>
+</head>
+<body>
+  <div id="loading"><div class="ld"></div>Carregando...</div>
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+    const { useState, useCallback, useEffect } = React;
+
+    // ─── DATA ────────────────────────────────────────────────────────────────
+    const BASE_PRICES = {
+      spot:   { label: "Spot Publicitário",           base: 2800, max: 4200 },
+      doc:    { label: "Documentário / Institucional", base: 3500, max: 6000 },
+      curta:  { label: "Curta Metragem",               base: 4500, max: 8000 },
+      social: { label: "Conteúdo Social Media",        base: 900,  max: 1800 },
+    };
+    const MULT = {
+      destination: {
+        social_only: { label: "Somente Social Media",  min: 0.80, max: 0.85 },
+        web:         { label: "Web / Streaming",        min: 1.00, max: 1.00 },
+        tv_regional: { label: "TV Regional",            min: 1.30, max: 1.40 },
+        tv_nacional: { label: "TV Nacional",            min: 1.60, max: 1.80 },
+        cinema:      { label: "Cinema / Festival",      min: 2.00, max: 2.40 },
+      },
+      complexity: {
+        basico:   { label: "Básico — cor naturalista, poucos ajustes",          min: 0.80, max: 0.85 },
+        padrao:   { label: "Padrão — grading completo, look definido",          min: 1.00, max: 1.00 },
+        avancado: { label: "Avançado — look criativo, integração VFX",          min: 1.40, max: 1.60 },
+        premium:  { label: "Premium — HDR, múltiplos formatos, alta exigência", min: 1.90, max: 2.20 },
+      },
+      deadline: {
+        normal:  { label: "Prazo normal (7+ dias)", min: 1.00, max: 1.00 },
+        rapido:  { label: "Rápido (3–6 dias)",       min: 1.20, max: 1.25 },
+        urgente: { label: "Urgente (1–2 dias)",       min: 1.50, max: 1.60 },
+      },
+      volume: {
+        unico:    { label: "Peça única",          min: 1.00, max: 1.00 },
+        pacote:   { label: "Pacote (2–4 peças)",  min: 0.88, max: 0.90 },
+        campanha: { label: "Campanha (5+ peças)", min: 0.75, max: 0.80 },
+      },
+    };
+    const GRADING_EXTRAS = {
+      hdr:         { label: "Entrega HDR / Dolby Vision",              value: 400 },
+      multiformat: { label: "Múltiplos formatos (16:9, 9:16, 1:1...)", value: 300 },
+      revisao:     { label: "Rodadas de revisão extras (+2)",           value: 350 },
+    };
+    const VFX_EFFECTS = [
+      { key: "tracking",    label: "Tracking / Estabilização", f:[120,180],  m:[280,380],  d:[600,900]   },
+      { key: "chroma",      label: "Chroma Key / Keying",       f:[150,200],  m:[320,450],  d:[700,1000]  },
+      { key: "compositing", label: "Compositing",               f:[180,260],  m:[400,580],  d:[900,1400]  },
+      { key: "mograph",     label: "Motion Graphics",           f:[200,300],  m:[450,650],  d:[1000,1600] },
+      { key: "particles",   label: "Partículas / Simulação",    f:[250,380],  m:[600,900],  d:[1400,2200] },
+      { key: "roto",        label: "Roto / Isolamento",         f:[130,200],  m:[300,450],  d:[700,1100]  },
+      { key: "3d",          label: "Integração 3D",             f:[350,500],  m:[800,1200], d:[2000,3200] },
+    ];
+    const DIFFS = [
+      { key: "f", label: "Fácil",   color: "#22c55e" },
+      { key: "m", label: "Médio",   color: "#f59e0b" },
+      { key: "d", label: "Difícil", color: "#ef4444" },
+    ];
+    const CAPT_CAMERAS = [
+      { key: "mirrorless", label: "Mirrorless / DSLR (Sony A7, Canon R)", day: [600,900]   },
+      { key: "cine_sony",  label: "Cinema Sony (FX3, FX6, FX9)",          day: [1000,1600] },
+      { key: "cine_red",   label: "Cinema RED / ARRI",                    day: [2500,4000] },
+      { key: "drone_b",    label: "Drone DJI Mini / Air",                 day: [400,600]   },
+      { key: "drone_p",    label: "Drone DJI Inspire / Mavic 3 Cine",     day: [900,1400]  },
+      { key: "gimbal",     label: "Gimbal / Steadicam",                   day: [350,600]   },
+    ];
+    const CAPT_AUDIO = [
+      { key: "boom",     label: "Boom + Gravador Zoom",        day: [250,400] },
+      { key: "wireless", label: "Sem-fio Lavalier (2 canais)", day: [300,500] },
+      { key: "mixer",    label: "Mixer / Mesa de campo",       day: [350,550] },
+    ];
+    const CAPT_LUZ = [
+      { key: "kit_led", label: "Kit LED (3 pontos)",           day: [400,650]  },
+      { key: "kit_hmi", label: "Kit HMI / Tungstênio",         day: [700,1100] },
+      { key: "rgb",     label: "Painéis RGB",                  day: [500,800]  },
+      { key: "grip",    label: "Grip / Bandeiras / Difusores", day: [250,450]  },
+    ];
+    const CAPT_EQUIPE = [
+      { key: "dop",  label: "Diretor de Fotografia (DOP)", day: [900,1600] },
+      { key: "cam",  label: "Operador de Câmera",          day: [600,1000] },
+      { key: "asst", label: "Assistente de Câmera",        day: [350,600]  },
+      { key: "gaff", label: "Gaffer / Eletricista",        day: [500,800]  },
+      { key: "som",  label: "Técnico de Som Direto",       day: [550,900]  },
+      { key: "prod", label: "Produtor de Campo",           day: [600,1000] },
+    ];
+    const ALL_CAPT = [...CAPT_CAMERAS, ...CAPT_AUDIO, ...CAPT_LUZ, ...CAPT_EQUIPE];
+    const EDICAO_ITENS = [
+      { key: "pre",  label: "Pré-edição",             desc: "Organização, ingestão e sync", min: 400,  max: 700  },
+      { key: "off",  label: "Edição Offline",          desc: "Montagem narrativa",           min: 800,  max: 1600 },
+      { key: "on",   label: "Edição Online",           desc: "Conformação e finalização",    min: 600,  max: 1200 },
+      { key: "leg",  label: "Legendas",                desc: "Closed caption ou aberta",     min: 60,   max: 120  },
+      { key: "gfx",  label: "Gráficos / Lower Thirds", desc: "Identificações e títulos",     min: 500,  max: 900  },
+      { key: "vinh", label: "Vinheta / Abertura",      desc: "Vinheta personalizada",        min: 800,  max: 1600 },
+    ];
+    const EDICAO_SOM = [
+      { key: "sd",  label: "Sound Design",  desc: "Ambiente sonoro e efeitos",    min: 700, max: 1400 },
+      { key: "tri", label: "Trilha Sonora", desc: "Composição ou licenciamento",  min: 500, max: 1200 },
+      { key: "mix", label: "Mixagem",       desc: "Balanceamento e masterização", min: 600, max: 1100 },
+      { key: "vo",  label: "Voice Over",    desc: "Gravação e edição de locução", min: 400, max: 800  },
+      { key: "sfx", label: "Foleys / SFX",  desc: "Efeitos sonoros e foley",      min: 350, max: 700  },
+    ];
+    const EDICAO_ENTREGA = [
+      { key: "mst", label: "Master Original",  desc: "Arquivo em máxima qualidade", min: 0,   max: 0    },
+      { key: "bc",  label: "Versão Broadcast", desc: "Conforme spec de emissora",   min: 200, max: 400  },
+      { key: "sc",  label: "Cortes Social",    desc: "Versões 9:16, 1:1, stories",  min: 250, max: 450  },
+      { key: "prx", label: "Proxy / Web",      desc: "Versão comprimida para web",  min: 100, max: 200  },
+      { key: "dcp", label: "DCP Cinema",       desc: "Distribuição para cinema",    min: 600, max: 1200 },
+    ];
+    const ALL_EDICAO = [...EDICAO_ITENS, ...EDICAO_SOM, ...EDICAO_ENTREGA];
+
+    // ─── HELPERS ─────────────────────────────────────────────────────────────
+    const fmt   = n => n.toLocaleString("pt-BR", { style:"currency", currency:"BRL", minimumFractionDigits:0 });
+    const today = () => new Date().toLocaleDateString("pt-BR");
+    const pv    = v => { const n = parseInt(String(v||"").replace(/\D/g,"")); return (!isNaN(n) && n > 0) ? n : undefined; };
+    const R     = n => Math.round(n / 50) * 50;
+    const MC    = { grading:"#f97316", vfx:"#a855f7", captacao:"#3b82f6", edicao:"#22c55e" };
+
+    const copyText = text => {
+      const fallback = () => {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        Object.assign(ta.style, { position:"fixed", opacity:"0", top:"0", left:"0", pointerEvents:"none" });
+        document.body.appendChild(ta);
+        ta.focus(); ta.select();
+        try { document.execCommand("copy"); } catch(_) {}
+        document.body.removeChild(ta);
+      };
+      if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(fallback);
+      } else {
+        fallback();
+      }
+    };
+
+    // ─── CÁLCULO ─────────────────────────────────────────────────────────────
+    function calcGrading(form) {
+      if (!form.type || !form.destination || !form.complexity || !form.deadline || !form.volume) return null;
+      const b = BASE_PRICES[form.type];
+      const d = MULT.destination[form.destination];
+      const c = MULT.complexity[form.complexity];
+      const dl = MULT.deadline[form.deadline];
+      const v = MULT.volume[form.volume];
+      let mn = b.base * d.min * c.min * dl.min * v.min;
+      let mx = b.max  * d.max * c.max * dl.max * v.max;
+      form.extras.forEach(k => { mn += GRADING_EXTRAS[k].value * 0.9; mx += GRADING_EXTRAS[k].value; });
+      return { min: R(mn), max: R(mx) };
+    }
+    function calcVfx(shots) {
+      let mn = 0, mx = 0;
+      VFX_EFFECTS.forEach(e => DIFFS.forEach(d => {
+        const q = parseInt(shots[e.key][d.key]) || 0;
+        if (q) { mn += q * e[d.key][0]; mx += q * e[d.key][1]; }
+      }));
+      return { min: mn, max: mx };
+    }
+    function calcCapt(days) {
+      let mn = 0, mx = 0;
+      ALL_CAPT.forEach(i => {
+        const d = parseInt(days[i.key]) || 0;
+        if (d) { mn += d * i.day[0]; mx += d * i.day[1]; }
+      });
+      return { min: mn, max: mx };
+    }
+    function calcEdicao(chk, qty) {
+      let mn = 0, mx = 0;
+      ALL_EDICAO.forEach(i => {
+        if (!chk[i.key] || i.min === 0) return;
+        const q = parseInt(qty[i.key]) || 1;
+        mn += q * i.min; mx += q * i.max;
+      });
+      return { min: mn, max: mx };
+    }
+
+    // ─── buildSections (string HTML — modo impressão) ─────────────────────────
+    function buildSections({ form, mod, gr, vr, vs, cr, cd, er, ec, eq, ov }) {
+      const sb = (title, color, rows, smn, smx) => {
+        if (!rows.length) return "";
+        const rs = rows.map(([l, v, vc]) =>
+          `<div class="ps-row"><span class="ps-rl">${l}</span><span class="ps-rv" style="color:${vc||"#555"}">${v}</span></div>`
+        ).join("");
+        return `<div class="ps">
+          <div class="ps-h"><div class="ps-dot" style="background:${color}"></div><span class="ps-t">${title}</span></div>
+          ${rs}
+          <div class="ps-sub" style="background:${color}10;border-left:3px solid ${color}">
+            <span class="ps-sl" style="color:${color}99">Subtotal</span>
+            <span class="ps-sv" style="color:${color}">${fmt(smn)} \u2013 ${fmt(smx)}</span>
+          </div></div>`;
+      };
+      let html = "";
+      if (mod.grading && gr) {
+        const mn = ov.gMin != null ? ov.gMin : gr.min;
+        const mx = ov.gMax != null ? ov.gMax : gr.max;
+        const rows = [
+          ["Tipo",         BASE_PRICES[form.type] ? BASE_PRICES[form.type].label : ""],
+          ["Destino",      MULT.destination[form.destination] ? MULT.destination[form.destination].label : ""],
+          ["Complexidade", MULT.complexity[form.complexity] ? MULT.complexity[form.complexity].label : ""],
+          ["Prazo",        MULT.deadline[form.deadline] ? MULT.deadline[form.deadline].label : ""],
+          ["Volume",       MULT.volume[form.volume] ? MULT.volume[form.volume].label : ""],
+        ];
+        if (form.extras.length) rows.push(["Adicionais", form.extras.map(k => GRADING_EXTRAS[k].label).join(", "), "#888"]);
+        html += sb("COLOR GRADING", "#f97316", rows, mn, mx);
+      }
+      if (mod.vfx && vr.min > 0) {
+        const mn = ov.vMin != null ? ov.vMin : vr.min;
+        const mx = ov.vMax != null ? ov.vMax : vr.max;
+        const rows = [];
+        VFX_EFFECTS.forEach(e => {
+          const parts = DIFFS.map(d => {
+            const q = parseInt(vs[e.key][d.key]) || 0;
+            return q ? `${q}x ${d.label}` : null;
+          }).filter(Boolean);
+          if (parts.length) rows.push([`${e.label} (${parts.join(", ")})`, "", "#a855f7"]);
+        });
+        html += sb("VFX / EFEITOS VISUAIS", "#a855f7", rows, mn, mx);
+      }
+      if (mod.captacao && cr.min > 0) {
+        const mn = ov.cMin != null ? ov.cMin : cr.min;
+        const mx = ov.cMax != null ? ov.cMax : cr.max;
+        const rows = [];
+        ALL_CAPT.forEach(i => {
+          const d = parseInt(cd[i.key]) || 0;
+          if (d) rows.push([`${i.label} (${d}d)`, `${fmt(d*i.day[0])} \u2013 ${fmt(d*i.day[1])}`, "#3b82f6"]);
+        });
+        html += sb("CAPTAÇÃO", "#3b82f6", rows, mn, mx);
+      }
+      if (mod.edicao && er.min > 0) {
+        const mn = ov.eMin != null ? ov.eMin : er.min;
+        const mx = ov.eMax != null ? ov.eMax : er.max;
+        const rows = [];
+        ALL_EDICAO.forEach(i => {
+          if (!ec[i.key]) return;
+          if (i.min === 0) { rows.push([i.label, "incluso", "#444"]); return; }
+          const q = parseInt(eq[i.key]) || 1;
+          rows.push([`${i.label}${q > 1 ? ` (x${q})` : ""}`, `${fmt(q*i.min)} \u2013 ${fmt(q*i.max)}`, "#22c55e"]);
+        });
+        html += sb("EDIÇÃO & SOM", "#22c55e", rows, mn, mx);
+      }
+      return html;
+    }
+
+    // ─── SectionPreview (JSX — modal) ────────────────────────────────────────
+    function SectionPreview({ form, mod, gr, vr, vs, cr, cd, er, ec, eq, ov }) {
+      const SB = ({ title, color, rows, smn, smx }) => (
+        <div style={{ marginBottom:20 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
+            <div style={{ width:10, height:10, borderRadius:"50%", background:color, flexShrink:0 }}/>
+            <span style={{ fontSize:11, fontWeight:800, letterSpacing:".2em", textTransform:"uppercase", color:"#111", fontFamily:"Helvetica Neue,Arial,sans-serif" }}>{title}</span>
+          </div>
+          {rows.map(([l, v, vc], i) => (
+            <div key={i} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #f0f0f0", gap:14 }}>
+              <span style={{ fontSize:11, color:"#888", flex:1, fontFamily:"Helvetica Neue,Arial,sans-serif" }}>{l}</span>
+              <span style={{ fontSize:11, textAlign:"right", flexShrink:0, color:vc||"#333", fontWeight:500, fontFamily:"Helvetica Neue,Arial,sans-serif" }}>{v}</span>
+            </div>
+          ))}
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 14px", margin:"8px 0 0", borderRadius:6, background:color+"10", borderLeft:`3px solid ${color}` }}>
+            <span style={{ fontSize:10, fontWeight:700, letterSpacing:".12em", textTransform:"uppercase", color:color+"99", fontFamily:"Helvetica Neue,Arial,sans-serif" }}>Subtotal</span>
+            <span style={{ fontSize:14, fontWeight:800, color, fontFamily:"Helvetica Neue,Arial,sans-serif" }}>{fmt(smn)} – {fmt(smx)}</span>
+          </div>
+        </div>
+      );
+      const gn = (ov.gMin != null ? ov.gMin : (gr ? gr.min : 0));
+      const gx = (ov.gMax != null ? ov.gMax : (gr ? gr.max : 0));
+      const vn = (ov.vMin != null ? ov.vMin : vr.min);
+      const vx = (ov.vMax != null ? ov.vMax : vr.max);
+      const cn = (ov.cMin != null ? ov.cMin : cr.min);
+      const cx = (ov.cMax != null ? ov.cMax : cr.max);
+      const en = (ov.eMin != null ? ov.eMin : er.min);
+      const ex = (ov.eMax != null ? ov.eMax : er.max);
+      return (
+        <div style={{ padding:"24px 32px" }}>
+          {mod.grading && gr && (() => {
+            const rows = [
+              ["Tipo",         BASE_PRICES[form.type] ? BASE_PRICES[form.type].label : ""],
+              ["Destino",      MULT.destination[form.destination] ? MULT.destination[form.destination].label : ""],
+              ["Complexidade", MULT.complexity[form.complexity] ? MULT.complexity[form.complexity].label : ""],
+              ["Prazo",        MULT.deadline[form.deadline] ? MULT.deadline[form.deadline].label : ""],
+              ["Volume",       MULT.volume[form.volume] ? MULT.volume[form.volume].label : ""],
+            ];
+            if (form.extras.length) rows.push(["Adicionais", form.extras.map(k => GRADING_EXTRAS[k].label).join(", "), "#888"]);
+            return <SB title="COLOR GRADING" color="#f97316" rows={rows} smn={gn} smx={gx}/>;
+          })()}
+          {mod.vfx && vr.min > 0 && (() => {
+            const rows = [];
+            VFX_EFFECTS.forEach(e => {
+              const parts = DIFFS.map(d => { const q=parseInt(vs[e.key][d.key])||0; return q ? `${q}x ${d.label}` : null; }).filter(Boolean);
+              if (parts.length) rows.push([`${e.label} (${parts.join(", ")})`, "", "#a855f7"]);
+            });
+            return <SB title="VFX / EFEITOS VISUAIS" color="#a855f7" rows={rows} smn={vn} smx={vx}/>;
+          })()}
+          {mod.captacao && cr.min > 0 && (() => {
+            const rows = [];
+            ALL_CAPT.forEach(i => { const d=parseInt(cd[i.key])||0; if(d) rows.push([`${i.label} (${d}d)`, `${fmt(d*i.day[0])} – ${fmt(d*i.day[1])}`, "#3b82f6"]); });
+            return <SB title="CAPTAÇÃO" color="#3b82f6" rows={rows} smn={cn} smx={cx}/>;
+          })()}
+          {mod.edicao && er.min > 0 && (() => {
+            const rows = [];
+            ALL_EDICAO.forEach(i => {
+              if (!ec[i.key]) return;
+              if (i.min === 0) { rows.push([i.label, "incluso", "#444"]); return; }
+              const q = parseInt(eq[i.key]) || 1;
+              rows.push([`${i.label}${q>1?` (x${q})`:""}`, `${fmt(q*i.min)} – ${fmt(q*i.max)}`, "#22c55e"]);
+            });
+            return <SB title="EDIÇÃO & SOM" color="#22c55e" rows={rows} smn={en} smx={ex}/>;
+          })()}
+        </div>
+      );
+    }
+
+    // ─── DocView ─────────────────────────────────────────────────────────────
+    function DocView({ fMin, fMax, obsNote, sections, mods, cn, pn, reactSections }) {
+      return (
+        <div style={{ background:"#fff", fontFamily:"'Helvetica Neue',Arial,sans-serif", maxWidth:680, margin:"0 auto", borderRadius:8, overflow:"hidden", boxShadow:"0 20px 60px rgba(0,0,0,.5)" }}>
+          {/* Cabeçalho */}
+          <div style={{ background:"#0a0a0a", padding:"28px 32px 22px", position:"relative", overflow:"hidden" }}>
+            <div style={{ position:"absolute", top:-60, right:-60, width:180, height:180, borderRadius:"50%", background:"rgba(249,115,22,.06)", pointerEvents:"none" }}/>
+            <div style={{ position:"absolute", bottom:-40, right:60, width:110, height:110, borderRadius:"50%", background:"rgba(249,115,22,.04)", pointerEvents:"none" }}/>
+            <div style={{ display:"flex", justifyContent:"space-between", flexWrap:"wrap", gap:14, position:"relative" }}>
+              <div>
+                <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
+                  <div style={{ width:3, height:26, background:"#f97316", borderRadius:2 }}/>
+                  <span style={{ fontSize:26, fontWeight:900, color:"#fff", letterSpacing:"-.04em" }}>BLACKOUT</span>
+                </div>
+                <div style={{ fontSize:9, color:"#555", letterSpacing:".18em", textTransform:"uppercase", paddingLeft:13 }}>Color Grading · VFX · Produção Audiovisual</div>
+              </div>
+              <div style={{ textAlign:"right" }}>
+                <div style={{ fontSize:8, color:"#f97316", letterSpacing:".2em", textTransform:"uppercase", fontWeight:700, marginBottom:6 }}>Proposta Comercial</div>
+                <div style={{ fontSize:11, color:"#666", lineHeight:1.8 }}>contato@blackoutpost.com<br/>blackoutpost.com<br/>(11) 98341-4634</div>
+              </div>
+            </div>
+            <div style={{ height:1, background:"linear-gradient(90deg,#f97316,transparent)", margin:"14px 0" }}/>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <span style={{ fontSize:10, color:"#444" }}>Emitido em {today()}</span>
+              <span style={{ fontSize:8, color:"#333", background:"#1e1e1e", padding:"3px 9px", borderRadius:20 }}>Válido por 15 dias</span>
+            </div>
+          </div>
+          {/* Faixa cliente */}
+          <div style={{ background:"#f5f5f5", padding:"18px 32px", display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
+            {[["CLIENTE", cn||"—"], ["PROJETO", pn||"—"]].map(([l, v]) => (
+              <div key={l}>
+                <div style={{ fontSize:8, color:"#aaa", letterSpacing:".18em", textTransform:"uppercase", fontWeight:700, marginBottom:4 }}>{l}</div>
+                <div style={{ fontSize:15, fontWeight:700, color:"#111" }}>{v}</div>
+              </div>
+            ))}
+          </div>
+          {/* Corpo */}
+          <div>
+            {reactSections || <div dangerouslySetInnerHTML={{ __html: sections }}/>}
+          </div>
+          {/* Total */}
+          <div style={{ background:"#0a0a0a", padding:"24px 32px" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", flexWrap:"wrap", gap:14, marginBottom:18 }}>
+              <div>
+                <div style={{ fontSize:9, color:"#f97316", letterSpacing:".22em", textTransform:"uppercase", fontWeight:700, marginBottom:6 }}>Investimento Total Estimado</div>
+                <div style={{ fontSize:28, fontWeight:900, color:"#fff", letterSpacing:"-.03em", lineHeight:1 }}>{fmt(fMin)}</div>
+                <div style={{ fontSize:13, color:"#555", marginTop:4 }}>até {fmt(fMax)}</div>
+              </div>
+              <div style={{ width:3, height:48, background:"linear-gradient(#f97316,transparent)", borderRadius:2, flexShrink:0 }}/>
+            </div>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginBottom:18 }}>
+              {mods.map(m => (
+                <div key={m.l} style={{ borderRadius:8, padding:"8px 12px", background:"#141414", border:`1px solid ${m.c}44` }}>
+                  <div style={{ fontSize:9, textTransform:"uppercase", letterSpacing:".1em", marginBottom:3, color:"#555" }}>{m.l}</div>
+                  <div style={{ fontSize:12, fontWeight:700, color:m.c }}>{fmt(m.mn)} – {fmt(m.mx)}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ height:1, background:"#1e1e1e", marginBottom:14 }}/>
+            <p style={{ fontSize:11, color:"#3a3a3a", lineHeight:1.8 }}>{obsNote}</p>
+          </div>
+          {/* Rodapé */}
+          <div style={{ background:"#f5f5f5", padding:"14px 32px", display:"flex", justifyContent:"space-between", flexWrap:"wrap", gap:8 }}>
+            <span style={{ fontSize:9, color:"#bbb", letterSpacing:".1em" }}>BLACKOUT AUDIOVISUAL — blackoutpost.com</span>
+            <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+              <div style={{ width:6, height:6, borderRadius:"50%", background:"#f97316" }}/>
+              <span style={{ fontSize:9, color:"#bbb" }}>Gerado em {today()}</span>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── PRIMITIVOS DE UI ─────────────────────────────────────────────────────
+    const S = {
+      page:   { minHeight:"100vh", background:"#0a0a0a", color:"#e5e5e5", fontFamily:"'DM Sans',sans-serif", padding:"28px 14px" },
+      inner:  { maxWidth:720, margin:"0 auto" },
+      card:   (c) => ({ background:"#111", border:`1px solid ${c||"#1e1e1e"}`, borderRadius:12, padding:24, marginBottom:14 }),
+      label:  { fontSize:10, letterSpacing:".16em", textTransform:"uppercase", fontFamily:"'DM Mono',monospace", color:"#f97316", marginBottom:14 },
+      grplbl: { fontSize:11, color:"#555", textTransform:"uppercase", letterSpacing:".1em", fontFamily:"'DM Mono',monospace", marginBottom:10 },
+      input:  { width:"100%", background:"#141414", border:"1.5px solid #2a2a2a", borderRadius:6, color:"#e5e5e5", padding:"10px 12px", fontSize:13, outline:"none" },
+    };
+
+    const Chip = ({ label, selected, onClick }) => (
+      <button onClick={onClick} style={{ padding:"8px 14px", borderRadius:6, border:selected?"1.5px solid #f97316":"1.5px solid #2a2a2a", background:selected?"rgba(249,115,22,.12)":"#141414", color:selected?"#f97316":"#888", fontSize:13, cursor:"pointer", textAlign:"left" }}>
+        {label}
+      </button>
+    );
+
+    const CheckChip = ({ label, checked, onChange }) => (
+      <button onClick={() => onChange(!checked)} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 14px", borderRadius:6, border:checked?"1.5px solid #f97316":"1.5px solid #2a2a2a", background:checked?"rgba(249,115,22,.08)":"#141414", color:checked?"#f97316":"#666", fontSize:13, cursor:"pointer" }}>
+        <span style={{ width:14, height:14, borderRadius:3, border:checked?"none":"1.5px solid #333", background:checked?"#f97316":"transparent", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+          {checked && <span style={{ color:"#0a0a0a", fontSize:10, fontWeight:900 }}>✓</span>}
+        </span>
+        {label}
+      </button>
+    );
+
+    const DayInput = ({ item, value, onChange, color }) => {
+      const n = parseInt(value) || 0;
+      const act = n > 0;
+      return (
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"9px 12px", borderRadius:7, border:`1px solid ${act?color+"44":"#1e1e1e"}`, background:act?color+"08":"#0f0f0f", marginBottom:6 }}>
+          <div>
+            <p style={{ fontSize:13, color:act?"#ddd":"#666" }}>{item.label}</p>
+            <p style={{ fontSize:11, color:"#3a3a3a", fontFamily:"'DM Mono',monospace", marginTop:2 }}>{fmt(item.day[0])}–{fmt(item.day[1])} / dia</p>
+          </div>
+          <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
+            {act && <span style={{ fontSize:11, color, fontFamily:"'DM Mono',monospace" }}>{fmt(n*item.day[0])}–{fmt(n*item.day[1])}</span>}
+            <div style={{ display:"flex", alignItems:"center", border:"1px solid #2a2a2a", borderRadius:5, overflow:"hidden" }}>
+              <button onClick={() => onChange(String(Math.max(0, n-1)))} style={{ width:28, height:32, background:"#141414", border:"none", color:"#555", fontSize:16 }}>−</button>
+              <input value={value} onChange={e => onChange(e.target.value.replace(/\D/g,""))} placeholder="0" inputMode="numeric"
+                style={{ width:36, height:32, background:"#0d0d0d", border:"none", color:"#e5e5e5", textAlign:"center", fontSize:13, fontFamily:"'DM Mono',monospace", outline:"none" }}/>
+              <button onClick={() => onChange(String(n+1))} style={{ width:28, height:32, background:"#141414", border:"none", color:"#555", fontSize:16 }}>+</button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const EdicaoItem = ({ item, checked, qty, onCheck, onQty, color }) => {
+      const q = parseInt(qty) || 1;
+      return (
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"9px 12px", borderRadius:7, border:`1px solid ${checked?color+"44":"#1e1e1e"}`, background:checked?color+"08":"#0f0f0f", marginBottom:6, gap:10 }}>
+          <button onClick={onCheck} style={{ display:"flex", alignItems:"center", gap:10, background:"none", border:"none", cursor:"pointer", flex:1, textAlign:"left", padding:0 }}>
+            <span style={{ width:16, height:16, borderRadius:4, border:checked?"none":"1.5px solid #333", background:checked?color:"transparent", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+              {checked && <span style={{ color:"#0a0a0a", fontSize:11, fontWeight:900 }}>✓</span>}
+            </span>
+            <div>
+              <p style={{ fontSize:13, color:checked?"#ddd":"#666" }}>{item.label}</p>
+              <p style={{ fontSize:11, color:"#3a3a3a", fontFamily:"'DM Mono',monospace", marginTop:1 }}>{item.desc}</p>
+            </div>
+          </button>
+          {checked && item.min > 0 && (
+            <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
+              <span style={{ fontSize:11, color, fontFamily:"'DM Mono',monospace", whiteSpace:"nowrap" }}>{fmt(q*item.min)}–{fmt(q*item.max)}</span>
+              <div style={{ display:"flex", alignItems:"center", border:"1px solid #2a2a2a", borderRadius:5, overflow:"hidden" }}>
+                <button onClick={() => onQty(String(Math.max(1, q-1)))} style={{ width:26, height:28, background:"#141414", border:"none", color:"#555", fontSize:14 }}>−</button>
+                <input value={qty||"1"} onChange={e => onQty(e.target.value.replace(/\D/g,""))} inputMode="numeric"
+                  style={{ width:30, height:28, background:"#0d0d0d", border:"none", color:"#e5e5e5", textAlign:"center", fontSize:12, fontFamily:"'DM Mono',monospace", outline:"none" }}/>
+                <button onClick={() => onQty(String(q+1))} style={{ width:26, height:28, background:"#141414", border:"none", color:"#555", fontSize:14 }}>+</button>
+              </div>
+            </div>
+          )}
+          {checked && item.min === 0 && <span style={{ fontSize:11, color:"#555", fontFamily:"'DM Mono',monospace" }}>incluso</span>}
+        </div>
+      );
+    };
+
+    const SubSec = ({ title, children }) => (
+      <div style={{ marginBottom:22 }}>
+        <p style={{ fontSize:11, letterSpacing:".12em", color:"#555", textTransform:"uppercase", fontFamily:"'DM Mono',monospace", marginBottom:10, paddingBottom:8, borderBottom:"1px solid #1a1a1a" }}>{title}</p>
+        {children}
+      </div>
+    );
+
+    const Subtotal = ({ label, min, max, color }) => (
+      <div style={{ padding:"12px 16px", background:color+"10", borderRadius:8, border:`1px solid ${color}30`, display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:4 }}>
+        <span style={{ fontSize:12, color:"#888", fontFamily:"'DM Mono',monospace" }}>{label}</span>
+        <span style={{ fontSize:15, fontWeight:700, color, fontFamily:"'DM Mono',monospace" }}>{fmt(min)} – {fmt(max)}</span>
+      </div>
+    );
+
+    // ─── APP ─────────────────────────────────────────────────────────────────
+    function App() {
+      useEffect(() => {
+        const el = document.getElementById("loading");
+        if (el) el.style.display = "none";
+      }, []);
+
+      const [mod,  setMod]  = useState({ grading:true, vfx:false, captacao:false, edicao:false });
+      const [form, setForm] = useState({ clientName:"", projectName:"", type:"", destination:"", complexity:"", deadline:"", volume:"", extras:[] });
+      const sf = (k, v) => setForm(x => ({ ...x, [k]: v }));
+      const toggleExtra = useCallback(k => setForm(x => ({
+        ...x, extras: x.extras.includes(k) ? x.extras.filter(e => e !== k) : [...x.extras, k]
+      })), []);
+
+      const [vs, setVs] = useState(() => { const o={}; VFX_EFFECTS.forEach(e=>{o[e.key]={f:"",m:"",d:""}}); return o; });
+      const [cd, setCd] = useState(() => { const o={}; ALL_CAPT.forEach(i=>{o[i.key]=""}); return o; });
+      const [ec, setEc] = useState(() => { const o={}; ALL_EDICAO.forEach(i=>{o[i.key]=false}); return o; });
+      const [eq, setEq] = useState(() => { const o={}; ALL_EDICAO.forEach(i=>{o[i.key]=""}); return o; });
+      const [copied,    setCopied]    = useState(false);
+      const [showPdf,   setShowPdf]   = useState(false);
+      const [printMode, setPrintMode] = useState(false);
+      const [pe,        setPe]        = useState({});
+      const sp = (k, v) => setPe(p => ({ ...p, [k]: v }));
+
+      // Valores calculados (sem overrides)
+      const gr = mod.grading  ? calcGrading(form) : null;
+      const vr = mod.vfx      ? calcVfx(vs)        : { min:0, max:0 };
+      const cr = mod.captacao ? calcCapt(cd)        : { min:0, max:0 };
+      const er = mod.edicao   ? calcEdicao(ec, eq)  : { min:0, max:0 };
+      const tMin = (gr ? gr.min : 0) + vr.min + cr.min + er.min;
+      const tMax = (gr ? gr.max : 0) + vr.max + cr.max + er.max;
+      const hasT = tMin > 0 || tMax > 0;
+
+      // Overrides do painel PDF
+      const ov = {
+        gMin: pv(pe.gMin), gMax: pv(pe.gMax),
+        vMin: pv(pe.vMin), vMax: pv(pe.vMax),
+        cMin: pv(pe.cMin), cMax: pv(pe.cMax),
+        eMin: pv(pe.eMin), eMax: pv(pe.eMax),
+      };
+
+      // Valores efetivos (override ?? calculado)
+      const effGMin = (mod.grading && gr)       ? (ov.gMin != null ? ov.gMin : gr.min) : 0;
+      const effGMax = (mod.grading && gr)       ? (ov.gMax != null ? ov.gMax : gr.max) : 0;
+      const effVMin = (mod.vfx && vr.min > 0)   ? (ov.vMin != null ? ov.vMin : vr.min) : 0;
+      const effVMax = (mod.vfx && vr.min > 0)   ? (ov.vMax != null ? ov.vMax : vr.max) : 0;
+      const effCMin = (mod.captacao && cr.min>0) ? (ov.cMin != null ? ov.cMin : cr.min) : 0;
+      const effCMax = (mod.captacao && cr.min>0) ? (ov.cMax != null ? ov.cMax : cr.max) : 0;
+      const effEMin = (mod.edicao && er.min > 0) ? (ov.eMin != null ? ov.eMin : er.min) : 0;
+      const effEMax = (mod.edicao && er.min > 0) ? (ov.eMax != null ? ov.eMax : er.max) : 0;
+      const pMin = effGMin + effVMin + effCMin + effEMin;
+      const pMax = effGMax + effVMax + effCMax + effEMax;
+
+      const pObs = (pe.obs && pe.obs.trim()) || "Os valores acima são uma estimativa de referência com base nos parâmetros informados. O orçamento definitivo será apresentado após análise do briefing completo do projeto.";
+      const pSec = (showPdf || printMode) ? buildSections({ form, mod, gr, vr, vs, cr, cd, er, ec, eq, ov }) : "";
+      const pMods = [
+        (mod.grading && gr)       ? { l:"Color Grading", mn:effGMin, mx:effGMax, c:"#f97316" } : null,
+        (mod.vfx && vr.min > 0)  ? { l:"VFX / Efeitos", mn:effVMin, mx:effVMax, c:"#a855f7" } : null,
+        (mod.captacao && cr.min>0)? { l:"Captação",      mn:effCMin, mx:effCMax, c:"#3b82f6" } : null,
+        (mod.edicao && er.min > 0)? { l:"Edição & Som",  mn:effEMin, mx:effEMax, c:"#22c55e" } : null,
+      ].filter(Boolean);
+      const editMods = [
+        (mod.grading && gr)       ? { k:"g", l:"Color Grading", c:"#f97316", calcMin:gr.min, calcMax:gr.max } : null,
+        (mod.vfx && vr.min > 0)  ? { k:"v", l:"VFX / Efeitos", c:"#a855f7", calcMin:vr.min, calcMax:vr.max } : null,
+        (mod.captacao && cr.min>0)? { k:"c", l:"Captação",      c:"#3b82f6", calcMin:cr.min, calcMax:cr.max } : null,
+        (mod.edicao && er.min > 0)? { k:"e", l:"Edição & Som",  c:"#22c55e", calcMin:er.min, calcMax:er.max } : null,
+      ].filter(Boolean);
+
+      const openPdf = () => {
+        if (!hasT) { alert("Preencha ao menos um módulo."); return; }
+        setPe({
+          obs:"",
+          gMin: gr        ? String(gr.min)  : "",  gMax: gr        ? String(gr.max)  : "",
+          vMin: vr.min>0  ? String(vr.min)  : "",  vMax: vr.min>0  ? String(vr.max)  : "",
+          cMin: cr.min>0  ? String(cr.min)  : "",  cMax: cr.min>0  ? String(cr.max)  : "",
+          eMin: er.min>0  ? String(er.min)  : "",  eMax: er.min>0  ? String(er.max)  : "",
+        });
+        setShowPdf(true);
+      };
+
+      const buildWppText = () => [
+        "*🎬 ORÇAMENTO BLACKOUT*", "",
+        form.clientName  ? `📋 *Cliente:* ${form.clientName}`  : null,
+        form.projectName ? `🎬 *Projeto:* ${form.projectName}` : null,
+        "", "*Serviços incluídos:*",
+        (mod.grading && gr)       ? `🎨 Color Grading: ${fmt(gr.min)} – ${fmt(gr.max)}` : null,
+        (mod.vfx && vr.min > 0)  ? `✨ VFX / Efeitos: ${fmt(vr.min)} – ${fmt(vr.max)}` : null,
+        (mod.captacao && cr.min>0)? `🎬 Captação: ${fmt(cr.min)} – ${fmt(cr.max)}`      : null,
+        (mod.edicao && er.min > 0)? `🎞 Edição & Som: ${fmt(er.min)} – ${fmt(er.max)}`  : null,
+        "", `💰 *TOTAL ESTIMADO:* ${fmt(tMin)} – ${fmt(tMax)}`, "",
+        `_Emitido em ${today()} · Válido por 15 dias_`,
+        "_blackoutpost.com | (11) 98341-4634_",
+      ].filter(l => l !== null).join("\n");
+
+      // ── MODO IMPRESSÃO ──
+      if (printMode) return (
+        <div style={{ background:"#0a0a0a", minHeight:"100vh" }}>
+          <div id="print-bar" style={{ background:"#1a1a1a", padding:"14px 18px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap", borderBottom:"2px solid #f97316" }}>
+            <div>
+              <p style={{ fontSize:13, color:"#fff", fontWeight:600 }}>
+                📱 <span style={{ color:"#f97316", fontWeight:700 }}>iPhone:</span> Compartilhar → Imprimir → belisque para ampliar → Salvar como PDF
+              </p>
+              <p style={{ fontSize:11, color:"#555", fontFamily:"'DM Mono',monospace", marginTop:4 }}>💻 Desktop: Ctrl+P / Cmd+P → Salvar como PDF</p>
+            </div>
+            <button onClick={() => setPrintMode(false)} style={{ background:"#333", border:"none", color:"#ccc", borderRadius:6, padding:"8px 16px", fontSize:13, flexShrink:0 }}>← Voltar</button>
+          </div>
+          <div style={{ padding:"16px 14px 60px" }}>
+            <DocView fMin={pMin} fMax={pMax} obsNote={pObs} sections={pSec} mods={pMods} cn={form.clientName} pn={form.projectName}/>
+          </div>
+        </div>
+      );
+
+      // ── LAYOUT PRINCIPAL ──
+      return (
+        <div style={S.page}>
+
+          {/* MODAL PDF */}
+          {showPdf && (
+            <div style={{ position:"fixed", inset:0, zIndex:1000, background:"rgba(0,0,0,.95)", overflowY:"auto" }}>
+              {/* barra topo */}
+              <div style={{ position:"sticky", top:0, zIndex:10, background:"#0a0a0a", borderBottom:"1px solid #222", padding:"12px 18px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:12 }}>
+                <span style={{ fontSize:11, color:"#555", fontFamily:"'DM Mono',monospace", letterSpacing:".12em", textTransform:"uppercase" }}>Proposta de Orçamento</span>
+                <div style={{ display:"flex", gap:10 }}>
+                  <button onClick={() => setPrintMode(true)} style={{ background:"#f97316", border:"none", color:"#fff", borderRadius:6, padding:"8px 18px", fontSize:13, fontWeight:700 }}>⬇ Salvar PDF</button>
+                  <button onClick={() => setShowPdf(false)} style={{ background:"#1a1a1a", border:"1px solid #333", color:"#888", borderRadius:6, padding:"8px 14px", fontSize:13 }}>Fechar</button>
+                </div>
+              </div>
+              {/* painel de edição */}
+              <div style={{ maxWidth:680, margin:"18px auto 0", padding:"0 14px" }}>
+                <div style={{ background:"#111", border:"1px solid rgba(249,115,22,.67)", borderRadius:10, padding:"18px 20px", marginBottom:14 }}>
+                  <p style={{ fontSize:10, color:"#f97316", letterSpacing:".18em", textTransform:"uppercase", fontFamily:"'DM Mono',monospace", marginBottom:14 }}>✏️ Ajustar valores antes de imprimir</p>
+                  {/* total automático */}
+                  <div style={{ padding:"12px 16px", background:"rgba(249,115,22,.08)", borderRadius:8, border:"1px solid rgba(249,115,22,.25)", marginBottom:18 }}>
+                    <p style={{ fontSize:9, color:"rgba(249,115,22,.6)", letterSpacing:".18em", textTransform:"uppercase", fontFamily:"'DM Mono',monospace", marginBottom:4 }}>Total calculado automaticamente</p>
+                    <p style={{ fontSize:20, fontWeight:800, color:"#f97316", fontFamily:"'DM Mono',monospace" }}>{fmt(pMin)} – {fmt(pMax)}</p>
+                    <p style={{ fontSize:10, color:"#444", marginTop:4, fontFamily:"'DM Mono',monospace" }}>Soma dos módulos abaixo — atualiza em tempo real</p>
+                  </div>
+                  {/* por módulo */}
+                  {editMods.map(m => (
+                    <div key={m.k} style={{ marginBottom:14 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
+                        <div style={{ width:8, height:8, borderRadius:"50%", background:m.c }}/>
+                        <span style={{ fontSize:11, fontWeight:700, color:m.c, fontFamily:"'DM Mono',monospace" }}>{m.l}</span>
+                        <button onClick={() => { sp(m.k+"Min", String(m.calcMin)); sp(m.k+"Max", String(m.calcMax)); }}
+                          style={{ marginLeft:"auto", fontSize:10, color:"#444", background:"#1a1a1a", border:"1px solid #2a2a2a", borderRadius:4, padding:"2px 8px", fontFamily:"'DM Mono',monospace" }}>↺ Restaurar</button>
+                      </div>
+                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                        {[["Min","Min"],["Max","Máx"]].map(([sfx,lbl]) => (
+                          <div key={sfx}>
+                            <p style={{ fontSize:10, color:"#555", marginBottom:4, fontFamily:"'DM Mono',monospace" }}>{lbl} (R$)</p>
+                            <input value={pe[m.k+sfx]||""} onChange={e => sp(m.k+sfx, e.target.value.replace(/\D/g,""))} inputMode="numeric"
+                              style={{ width:"100%", background:"#141414", border:`1.5px solid ${m.c}66`, borderRadius:6, color:m.c, padding:"8px 10px", fontSize:14, fontFamily:"'DM Mono',monospace", outline:"none", fontWeight:700 }}/>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  {/* obs */}
+                  <p style={{ fontSize:10, color:"#555", marginBottom:6, fontFamily:"'DM Mono',monospace", marginTop:4 }}>Observação final (opcional)</p>
+                  <textarea value={pe.obs||""} onChange={e => sp("obs", e.target.value)} rows={3}
+                    placeholder="Ex: Proposta válida mediante 50% de sinal no início..."
+                    style={{ width:"100%", background:"#1a1a1a", border:"1.5px solid #2a2a2a", borderRadius:6, color:"#aaa", padding:"10px 12px", fontSize:13, outline:"none", resize:"vertical" }}/>
+                </div>
+              </div>
+              {/* preview ao vivo */}
+              <div style={{ padding:"0 14px 60px", maxWidth:680, margin:"0 auto" }}>
+                <DocView fMin={pMin} fMax={pMax} obsNote={pObs} sections="" mods={pMods} cn={form.clientName} pn={form.projectName}
+                  reactSections={<SectionPreview form={form} mod={mod} gr={gr} vr={vr} vs={vs} cr={cr} cd={cd} er={er} ec={ec} eq={eq} ov={ov}/>}/>
+              </div>
+            </div>
+          )}
+
+          {/* CALCULADOR PRINCIPAL */}
+          <div style={S.inner}>
+            {/* cabeçalho */}
+            <div style={{ marginBottom:28 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
+                <div style={{ width:8, height:8, borderRadius:"50%", background:"#f97316" }}/>
+                <span style={{ fontSize:10, letterSpacing:".2em", color:"#555", fontFamily:"'DM Mono',monospace", textTransform:"uppercase" }}>Blackout Audiovisual</span>
+              </div>
+              <h1 style={{ fontSize:24, fontWeight:600, color:"#fff", letterSpacing:"-.02em" }}>Calculador de Orçamento</h1>
+              <p style={{ color:"#555", fontSize:14, marginTop:6 }}>Ative os módulos do projeto e preencha os parâmetros.</p>
+            </div>
+
+            {/* dados do projeto */}
+            <div style={S.card()}>
+              <p style={S.label}>Dados do Projeto</p>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                <div>
+                  <p style={{ fontSize:12, color:"#555", marginBottom:6 }}>Cliente</p>
+                  <input style={S.input} placeholder="Ex: Volkswagen" value={form.clientName} onChange={e => sf("clientName", e.target.value)}/>
+                </div>
+                <div>
+                  <p style={{ fontSize:12, color:"#555", marginBottom:6 }}>Projeto</p>
+                  <input style={S.input} placeholder="Ex: Campanha Verão" value={form.projectName} onChange={e => sf("projectName", e.target.value)}/>
+                </div>
+              </div>
+            </div>
+
+            {/* seleção de módulos */}
+            <p style={{ ...S.label, marginBottom:10 }}>Módulos do projeto</p>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:10, marginBottom:18 }}>
+              {[["grading","🎨","Color Grading"],["vfx","✨","VFX / Efeitos"],["captacao","🎬","Captação"],["edicao","🎞","Edição & Som"]].map(([k, icon, lbl]) => (
+                <button key={k} onClick={() => setMod(m => ({ ...m, [k]: !m[k] }))}
+                  style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 14px", borderRadius:8, border:mod[k]?`1.5px solid ${MC[k]}`:"1.5px solid #222", background:mod[k]?MC[k]+"18":"#0f0f0f", color:mod[k]?MC[k]:"#444", fontSize:13, fontWeight:600 }}>
+                  {icon} {lbl}
+                </button>
+              ))}
+            </div>
+
+            {/* ── COLOR GRADING ── */}
+            {mod.grading && (
+              <div style={S.card(MC.grading+"22")}>
+                <p style={{ ...S.label, color:MC.grading }}>🎨 Color Grading</p>
+                {[
+                  ["type",        "Tipo de Serviço",      BASE_PRICES],
+                  ["destination", "Destino / Veiculação", MULT.destination],
+                  ["complexity",  "Complexidade",          MULT.complexity],
+                  ["deadline",    "Prazo",                 MULT.deadline],
+                  ["volume",      "Volume",                MULT.volume],
+                ].map(([k, lbl, data]) => (
+                  <div key={k} style={{ marginBottom:20 }}>
+                    <p style={S.grplbl}>{lbl}</p>
+                    <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                      {Object.entries(data).map(([ck, cv]) => (
+                        <Chip key={ck} label={cv.label} selected={form[k]===ck} onClick={() => sf(k, ck)}/>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                <div style={{ marginBottom:20 }}>
+                  <p style={S.grplbl}>Adicionais</p>
+                  <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                    {Object.entries(GRADING_EXTRAS).map(([k, v]) => (
+                      <CheckChip key={k} label={v.label} checked={form.extras.includes(k)} onChange={() => toggleExtra(k)}/>
+                    ))}
+                  </div>
+                </div>
+                {gr && <Subtotal label="Subtotal Grading" min={gr.min} max={gr.max} color={MC.grading}/>}
+              </div>
+            )}
+
+            {/* ── VFX ── */}
+            {mod.vfx && (
+              <div style={S.card(MC.vfx+"22")}>
+                <p style={{ ...S.label, color:MC.vfx }}>✨ VFX / Efeitos Visuais</p>
+                <div style={{ overflowX:"auto" }}>
+                  <table style={{ width:"100%", borderCollapse:"collapse", minWidth:500 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign:"left", paddingBottom:12, fontSize:10, color:"#444", fontWeight:500, fontFamily:"'DM Mono',monospace", letterSpacing:".1em", width:"38%" }}>EFEITO</th>
+                        {DIFFS.map(d => (
+                          <th key={d.key} style={{ textAlign:"center", padding:"0 8px 12px", fontSize:11, fontWeight:700, fontFamily:"'DM Mono',monospace", color:d.color }}>
+                            {d.label}
+                            <div style={{ fontSize:9, color:"#333", fontWeight:400, marginTop:3 }}>shots</div>
+                          </th>
+                        ))}
+                        <th style={{ textAlign:"right", paddingBottom:12, paddingLeft:8, fontSize:10, color:"#444", fontFamily:"'DM Mono',monospace" }}>SUBTOTAL</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {VFX_EFFECTS.map(e => {
+                        const rMin = DIFFS.reduce((a,d) => a + (parseInt(vs[e.key][d.key])||0) * e[d.key][0], 0);
+                        const rMax = DIFFS.reduce((a,d) => a + (parseInt(vs[e.key][d.key])||0) * e[d.key][1], 0);
+                        return (
+                          <tr key={e.key} style={{ borderTop:"1px solid #1a1a1a" }}>
+                            <td style={{ padding:"10px 8px 10px 0", fontSize:13, color:rMin>0?"#ddd":"#555" }}>{e.label}</td>
+                            {DIFFS.map(d => {
+                              const v = vs[e.key][d.key];
+                              const act = (parseInt(v)||0) > 0;
+                              return (
+                                <td key={d.key} style={{ padding:"6px 4px" }}>
+                                  <input value={v}
+                                    onChange={ev => setVs(s => ({ ...s, [e.key]: { ...s[e.key], [d.key]: ev.target.value.replace(/\D/g,"") } }))}
+                                    placeholder="0" inputMode="numeric"
+                                    style={{ width:"100%", minWidth:42, background:"#0d0d0d", border:`1px solid ${act?d.color+"55":"#222"}`, borderRadius:5, color:act?d.color:"#555", padding:"8px 4px", fontSize:13, fontFamily:"'DM Mono',monospace", outline:"none", textAlign:"center" }}/>
+                                </td>
+                              );
+                            })}
+                            <td style={{ padding:"10px 0 10px 8px", textAlign:"right", fontFamily:"'DM Mono',monospace", fontSize:12, whiteSpace:"nowrap" }}>
+                              {rMin > 0
+                                ? <><span style={{ color:MC.vfx, display:"block" }}>{fmt(rMin)}</span><span style={{ color:"#555", fontSize:10 }}>{fmt(rMax)}</span></>
+                                : <span style={{ color:"#222" }}>—</span>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {vr.min > 0 && <Subtotal label="Subtotal VFX" min={vr.min} max={vr.max} color={MC.vfx}/>}
+              </div>
+            )}
+
+            {/* ── CAPTAÇÃO ── */}
+            {mod.captacao && (
+              <div style={S.card(MC.captacao+"22")}>
+                <p style={{ ...S.label, color:MC.captacao }}>🎬 Captação</p>
+                <SubSec title="Câmeras & Rigs">{CAPT_CAMERAS.map(i => <DayInput key={i.key} item={i} value={cd[i.key]} onChange={v=>setCd(d=>({...d,[i.key]:v}))} color={MC.captacao}/>)}</SubSec>
+                <SubSec title="Áudio">{CAPT_AUDIO.map(i => <DayInput key={i.key} item={i} value={cd[i.key]} onChange={v=>setCd(d=>({...d,[i.key]:v}))} color={MC.captacao}/>)}</SubSec>
+                <SubSec title="Iluminação & Grip">{CAPT_LUZ.map(i => <DayInput key={i.key} item={i} value={cd[i.key]} onChange={v=>setCd(d=>({...d,[i.key]:v}))} color={MC.captacao}/>)}</SubSec>
+                <SubSec title="Equipe">{CAPT_EQUIPE.map(i => <DayInput key={i.key} item={i} value={cd[i.key]} onChange={v=>setCd(d=>({...d,[i.key]:v}))} color={MC.captacao}/>)}</SubSec>
+                {cr.min > 0 && <Subtotal label="Subtotal Captação" min={cr.min} max={cr.max} color={MC.captacao}/>}
+              </div>
+            )}
+
+            {/* ── EDIÇÃO & SOM ── */}
+            {mod.edicao && (
+              <div style={S.card(MC.edicao+"22")}>
+                <p style={{ ...S.label, color:MC.edicao }}>🎞 Edição & Som</p>
+                <SubSec title="Edição">{EDICAO_ITENS.map(i => <EdicaoItem key={i.key} item={i} checked={ec[i.key]} qty={eq[i.key]} onCheck={()=>setEc(c=>({...c,[i.key]:!c[i.key]}))} onQty={v=>setEq(q=>({...q,[i.key]:v}))} color={MC.edicao}/>)}</SubSec>
+                <SubSec title="Som & Sonoplastia">{EDICAO_SOM.map(i => <EdicaoItem key={i.key} item={i} checked={ec[i.key]} qty={eq[i.key]} onCheck={()=>setEc(c=>({...c,[i.key]:!c[i.key]}))} onQty={v=>setEq(q=>({...q,[i.key]:v}))} color={MC.edicao}/>)}</SubSec>
+                <SubSec title="Formatos de Entrega">{EDICAO_ENTREGA.map(i => <EdicaoItem key={i.key} item={i} checked={ec[i.key]} qty={eq[i.key]} onCheck={()=>setEc(c=>({...c,[i.key]:!c[i.key]}))} onQty={v=>setEq(q=>({...q,[i.key]:v}))} color={MC.edicao}/>)}</SubSec>
+                {er.min > 0 && <Subtotal label="Subtotal Edição & Som" min={er.min} max={er.max} color={MC.edicao}/>}
+              </div>
+            )}
+
+            {/* ── TOTAL ── */}
+            {hasT && (
+              <div style={{ background:"#111", border:"1px solid #1e1e1e", borderRadius:12, overflow:"hidden", marginBottom:32 }}>
+                <div style={{ padding:"22px 24px" }}>
+                  <p style={S.label}>Investimento total estimado</p>
+                  <p style={{ fontSize:28, fontWeight:700, color:"#fff", letterSpacing:"-.02em", marginBottom:12 }}>
+                    {fmt(tMin)} <span style={{ color:"#444" }}>–</span> {fmt(tMax)}
+                  </p>
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginBottom:18 }}>
+                    {(mod.grading && gr)       && <span style={{ fontSize:11, padding:"4px 10px", borderRadius:20, background:MC.grading+"18",  color:MC.grading,  fontFamily:"'DM Mono',monospace" }}>Grading {fmt(gr.min)}–{fmt(gr.max)}</span>}
+                    {(mod.vfx && vr.min > 0)  && <span style={{ fontSize:11, padding:"4px 10px", borderRadius:20, background:MC.vfx+"18",      color:MC.vfx,      fontFamily:"'DM Mono',monospace" }}>VFX {fmt(vr.min)}–{fmt(vr.max)}</span>}
+                    {(mod.captacao && cr.min>0)&& <span style={{ fontSize:11, padding:"4px 10px", borderRadius:20, background:MC.captacao+"18", color:MC.captacao, fontFamily:"'DM Mono',monospace" }}>Captação {fmt(cr.min)}–{fmt(cr.max)}</span>}
+                    {(mod.edicao && er.min > 0)&& <span style={{ fontSize:11, padding:"4px 10px", borderRadius:20, background:MC.edicao+"18",   color:MC.edicao,   fontFamily:"'DM Mono',monospace" }}>Edição {fmt(er.min)}–{fmt(er.max)}</span>}
+                  </div>
+                  <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+                    <button onClick={() => { copyText(buildWppText()); setCopied(true); setTimeout(()=>setCopied(false), 2500); }}
+                      style={{ flex:1, minWidth:140, padding:"12px 16px", borderRadius:8, border:copied?"1.5px solid #22c55e":"1.5px solid #333", background:copied?"rgba(34,197,94,.1)":"#141414", color:copied?"#22c55e":"#ccc", fontWeight:600, fontSize:13 }}>
+                      {copied ? "✓ Copiado para WhatsApp!" : "💬 Copiar para WhatsApp"}
+                    </button>
+                    <button onClick={openPdf}
+                      style={{ flex:1, minWidth:140, padding:"12px 16px", borderRadius:8, border:"none", background:"#f97316", color:"#fff", fontWeight:700, fontSize:13 }}>
+                      📄 Ver Orçamento PDF
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {!hasT && (
+              <p style={{ textAlign:"center", color:"#2a2a2a", fontSize:13, fontFamily:"'DM Mono',monospace", padding:"24px 0" }}>
+                ative um módulo e preencha os campos para gerar o orçamento
+              </p>
+            )}
+            <p style={{ textAlign:"center", color:"#1e1e1e", fontSize:11, marginBottom:32, fontFamily:"'DM Mono',monospace" }}>blackout © — valores de referência</p>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
